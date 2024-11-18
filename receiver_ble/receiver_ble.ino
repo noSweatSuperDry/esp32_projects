@@ -3,7 +3,7 @@
 #include <BLEClient.h>
 
 #define RGB_BUILTIN 8  // GPIO for built-in RGB LED
-#define GPIO_PIN 5     // GPIO for additional control (ON/OFF)
+#define GPIO_PIN 22     // GPIO for additional control (ON/OFF)
 
 // UUIDs for the server's service and characteristic
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
