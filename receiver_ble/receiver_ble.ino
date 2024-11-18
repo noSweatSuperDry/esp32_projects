@@ -3,6 +3,7 @@
 #include <BLEClient.h>
 
 #define RGB_BUILTIN 8  // GPIO for built-in RGB LED
+#define GPIO_PIN 5     // GPIO for additional control (ON/OFF)
 
 // UUIDs for the server's service and characteristic
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -40,10 +41,12 @@ void notifyCallback(
   // Check for exact match to "GREEN" or "RED" only
   if (value == "GREEN") {
     neopixelWrite(RGB_BUILTIN, 0, 255, 0);  // Green color
-    Serial.println("Receiver LED set to GREEN");
+    digitalWrite(GPIO_PIN, HIGH);          // Turn GPIO 5 ON
+    Serial.println("Receiver LED set to GREEN, GPIO 5 ON");
   } else if (value == "RED") {
-    neopixelWrite(RGB_BUILTIN, 255, 0, 0);  // Red color
-    Serial.println("Receiver LED set to RED");
+    neopixelWrite(RGB_BUILTIN, 255, 0, 0); // Red color
+    digitalWrite(GPIO_PIN, LOW);           // Turn GPIO 5 OFF
+    Serial.println("Receiver LED set to RED, GPIO 5 OFF");
   } else {
     Serial.println("Received unexpected notification value.");
   }
@@ -54,7 +57,11 @@ void setup() {
 
   // Initialize RGB LED to red initially
   neopixelWrite(RGB_BUILTIN, 255, 0, 0);  // Red color
-  
+
+  // Configure GPIO pin
+  pinMode(GPIO_PIN, OUTPUT);
+  digitalWrite(GPIO_PIN, LOW);  // Ensure GPIO 5 starts OFF
+
   // Start BLE client
   BLEDevice::init("");
   BLEClient *pClient = BLEDevice::createClient();
