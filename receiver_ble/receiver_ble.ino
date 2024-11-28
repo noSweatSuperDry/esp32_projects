@@ -38,17 +38,13 @@ void notifyCallback(
   Serial.print("Received notification: ");
   Serial.println(value);
 
-  // Check for exact match to "GREEN" or "RED" only
+  // Update RGB LED and GPIO based on the received value
   if (value == "GREEN") {
     neopixelWrite(RGB_BUILTIN, 0, 255, 0);  // Green color
-    digitalWrite(GPIO_PIN, HIGH);          // Turn GPIO 5 ON
-    Serial.println("Receiver LED set to GREEN, GPIO 5 ON");
+    digitalWrite(GPIO_PIN, HIGH);          // Turn GPIO 22 ON
   } else if (value == "RED") {
     neopixelWrite(RGB_BUILTIN, 255, 0, 0); // Red color
-    digitalWrite(GPIO_PIN, LOW);           // Turn GPIO 5 OFF
-    Serial.println("Receiver LED set to RED, GPIO 5 OFF");
-  } else {
-    Serial.println("Received unexpected notification value.");
+    digitalWrite(GPIO_PIN, LOW);           // Turn GPIO 22 OFF
   }
 }
 
@@ -60,7 +56,7 @@ void setup() {
 
   // Configure GPIO pin
   pinMode(GPIO_PIN, OUTPUT);
-  digitalWrite(GPIO_PIN, LOW);  // Ensure GPIO 5 starts OFF
+  digitalWrite(GPIO_PIN, LOW);  // Ensure GPIO starts OFF
 
   // Start BLE client
   BLEDevice::init("");
@@ -99,5 +95,5 @@ void setup() {
 }
 
 void loop() {
-  // No additional code needed here; LED updates happen in the notification callback
+  // Keep the loop empty for maximum responsiveness
 }

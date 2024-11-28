@@ -10,15 +10,14 @@
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 BLECharacteristic *pCharacteristic;
-bool deviceConnected = false;
-bool switchState = false;
+bool lastSwitchState = HIGH;  // Assume initial button is unpressed
 
 void setup() {
   Serial.begin(115200);
   
-  // Initialize Switch
+  // Initialize switch
   pinMode(SWITCH_PIN, INPUT_PULLUP);
-  
+
   // Initialize RGB LED to red
   neopixelWrite(RGB_BUILTIN, 255, 0, 0);  // Red color
   
@@ -39,21 +38,27 @@ void setup() {
   pService->start();
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setMinPreferred(0x06);  // Minimum connection interval (7.5ms)
+  pAdvertising->setMaxPreferred(0x12);  // Maximum connection interval (15ms)
   pAdvertising->start();
 }
 
 void loop() {
-  if (digitalRead(SWITCH_PIN) == LOW) { // Switch is pressed
-    // Change RGB LED to green and update BLE characteristic
-    neopixelWrite(RGB_BUILTIN, 0, 255, 0);  // Green color
-    pCharacteristic->setValue("GREEN");
-    pCharacteristic->notify();  // Notify connected client of the change
-    delay(200);  // Debounce delay
-  } else {
-    // Change RGB LED to red and update BLE characteristic
-    neopixelWrite(RGB_BUILTIN, 255, 0, 0);  // Red color
-    pCharacteristic->setValue("RED");
-    pCharacteristic->notify();  // Notify connected client of the change
-    delay(200);  // Debounce delay
+  // Read the current switch state
+  bool currentSwitchState = digitalRead(SWITCH_PIN);
+
+  // Detect state change
+  if (currentSwitchState != lastSwitchState) {
+    if (currentSwitchState == LOW) {  // Button pressed
+      neopixelWrite(RGB_BUILTIN, 0, 255, 0);  // Green color
+      pCharacteristic->setValue("GREEN");
+    } else {  // Button released
+      neopixelWrite(RGB_BUILTIN, 255, 0, 0);  // Red color
+      pCharacteristic->setValue("RED");
+    }
+    pCharacteristic->notify();  // Notify the connected client
+    delay(50);  // Debounce delay
   }
+
+  lastSwitchState = currentSwitchState;
 }
