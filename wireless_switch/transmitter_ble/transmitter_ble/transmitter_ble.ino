@@ -2,7 +2,7 @@
 #include <BLEUtils.h>
 #include <BLEServer.h>
 
-#define SWITCH_PIN 22
+#define SWITCH_PIN 2
 #define RGB_BUILTIN 8  // GPIO for built-in RGB LED
 
 // UUIDs for the service and characteristic
