@@ -23,5 +23,5 @@ void loop() {
   Serial.print(" | Voltage: ");
   Serial.println(voltage);
 
-  delay(500); // Wait for 500 ms before reading again
+  delay(00); // Wait for 500 ms before reading again
 }
