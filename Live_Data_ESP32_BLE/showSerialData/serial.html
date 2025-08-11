@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Serial Port Reader</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; }
+    #log { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>Serial Data Reader</h2>
+  <button id="connect">Connect to Serial Port</button>
+  <div id="log"></div>
+
+  <script>
+    const connectBtn = document.getElementById('connect');
+    const logEl = document.getElementById('log');
+
+    async function connectSerial() {
+      try {
+        // Ask user to select a serial port
+        const port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 }); // Set your baud rate
+
+        const decoder = new TextDecoderStream();
+        const readableStreamClosed = port.readable.pipeTo(decoder.writable);
+        const reader = decoder.readable.getReader();
+
+        logEl.innerHTML += "✅ Connected to port\n";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            logEl.innerHTML += value;
+            logEl.scrollTop = logEl.scrollHeight; // Auto-scroll
+          }
+        }
+
+        reader.releaseLock();
+      } catch (err) {
+        logEl.innerHTML += "❌ Error: " + err + "\n";
+      }
+    }
+
+    connectBtn.addEventListener('click', connectSerial);
+  </script>
+</body>
+</html>

@@ -1,3 +1,15 @@
+// How it works now
+// The main HTML page loads once.
+
+// JavaScript opens a /events SSE stream.
+
+// Every time the ESP32 gets BLE data, it:
+
+// Prints it to Serial (USB-C, 115200 baud, 8N1, no flow control).
+
+// Stores it in the last 10 message buffer.
+
+// Sends it instantly to the browser via SSE — only the <div> updates, no page reload.
 #include <WiFi.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -10,22 +22,34 @@ const char* ssid = "SKYNET MESH NETWORK";
 const char* password = "Evan.Sejnin.15";
 
 // ==== LT600 UUIDs ====
-static BLEUUID serviceUUID("0bd51666-e7cb-469b-8e4d-2742f1ba77cc");
+static BLEUUID lt600ServiceUUID("0bd51666-e7cb-469b-8e4d-2742f1ba77cc");
+static BLEUUID lt600NotifyUUID("e7add780-b042-4876-aae1-11285535f821");
 static BLEUUID writeCharUUID("e7add780-b042-4876-aae1-11285535f721");
-static BLEUUID notifyCharUUID("e7add780-b042-4876-aae1-11285535f821");
-
 // ==== Web server ====
 WebServer server(80);
-String scanResultsHTML;
-String liveDataHTML;
 
 // ==== BLE ====
 BLEScan* pBLEScan;
 BLEClient* pClient;
 BLERemoteCharacteristic* pNotifyChar;
-String connectedAddress = "";
+String lt600Address = "";
+bool lt600Connected = false;
+bool reconnectPending = false;
 
-// Notification callback
+// ==== BLE Client Callback ====
+class LT600ClientCallbacks : public BLEClientCallbacks {
+    void onConnect(BLEClient* pClient) override {
+        Serial.println("LT600 connected.");
+    }
+    void onDisconnect(BLEClient* pClient) override {
+        Serial.println("LT600 disconnected. Attempting reconnect...");
+        lt600Connected = false;
+        reconnectPending = true;
+    }
+};
+LT600ClientCallbacks clientCB; // global instance
+
+// ==== Notify callback ====
 static void notifyCallback(
     BLERemoteCharacteristic* pRemoteCharacteristic,
     uint8_t* pData,
@@ -34,96 +58,126 @@ static void notifyCallback(
 ) {
     String incoming = "";
     for (size_t i = 0; i < length; i++) incoming += (char)pData[i];
-    Serial.println("BLE Data: " + incoming);
-
-    // Append to live data buffer for web display
-    liveDataHTML += incoming + "<br>";
-    if (liveDataHTML.length() > 5000) liveDataHTML = ""; // prevent overflow
+    Serial.println(incoming); // Forward BLE data to USB serial
 }
 
-// Connect to device by address
-bool connectToDevice(String address) {
-    Serial.println("Connecting to: " + address);
+// ==== Connect to LT600 ====
+bool connectToLT600(String address) {
+    Serial.println("Connecting to LT600 at: " + address);
 
     pClient = BLEDevice::createClient();
+    pClient->setClientCallbacks(&clientCB);
+
     BLEAddress bleAddr(address.c_str());
 
     if (!pClient->connect(bleAddr)) {
-        Serial.println("Failed to connect!");
+        Serial.println("Failed to connect to LT600");
         return false;
     }
 
-    Serial.println("Connected, discovering service...");
-    BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
-    if (pRemoteService == nullptr) {
-        Serial.println("Service not found!");
+    BLERemoteService* pRemoteService = pClient->getService(lt600ServiceUUID);
+    if (!pRemoteService) {
+        Serial.println("LT600 Service not found!");
         pClient->disconnect();
         return false;
     }
 
-    pNotifyChar = pRemoteService->getCharacteristic(notifyCharUUID);
+    pNotifyChar = pRemoteService->getCharacteristic(lt600NotifyUUID);
     if (pNotifyChar && pNotifyChar->canNotify()) {
         pNotifyChar->registerForNotify(notifyCallback);
-        Serial.println("Notify characteristic subscribed!");
+        lt600Connected = true;
+        Serial.println("Connected and subscribed to LT600 notifications.");
         return true;
     }
 
-    Serial.println("Notify characteristic not found!");
+    Serial.println("LT600 Notify characteristic not found!");
     pClient->disconnect();
     return false;
 }
 
-// Scan for BLE devices
-void scanForDevices() {
-    scanResultsHTML = "<h2>BLE Scan Results</h2><ul>";
+// ==== Disconnect ====
+void disconnectLT600() {
+    if (pClient && pClient->isConnected()) {
+        pClient->disconnect();
+    }
+    lt600Connected = false;
+    reconnectPending = false;
+}
 
-    Serial.println("Scanning for BLE devices...");
+// ==== Scan for LT600 ====
+String scanForLT600() {
+    Serial.println("Scanning for LT600...");
+    String resultHTML = "<h2>Scan Results</h2><ul>";
+
     BLEScanResults* results = pBLEScan->start(3);
     int count = results->getCount();
-    Serial.printf("Found %d devices\n", count);
 
     for (int i = 0; i < count; i++) {
         BLEAdvertisedDevice dev = results->getDevice(i);
-        String addr = dev.getAddress().toString().c_str();
-        scanResultsHTML += "<li>" + String(dev.toString().c_str());
-        scanResultsHTML += " <a href='/connect?addr=" + addr + "'>Connect</a></li>";
+        if (dev.haveServiceUUID() && dev.isAdvertisingService(lt600ServiceUUID)) {
+            String addr = dev.getAddress().toString().c_str();
+            lt600Address = addr;
+            resultHTML += "<li>LT600 found at " + addr +
+                          " <form style='display:inline;' action='/connect' method='POST'><button type='submit'>Connect</button></form></li>";
+        }
     }
 
-    scanResultsHTML += "</ul>";
+    if (lt600Address == "") {
+        resultHTML += "<li>No LT600 found.</li>";
+    }
+
+    resultHTML += "</ul>";
     pBLEScan->clearResults();
+    return resultHTML;
 }
 
-// Handle main page
+// ==== Web Page ====
 void handleRoot() {
-    scanForDevices();
     String page = "<html><head><meta charset='UTF-8'></head><body>";
-    page += "<h1>ESP32-C6 BLE Scanner</h1>";
-    page += scanResultsHTML;
-    page += "<br><form action='/' method='GET'><input type='submit' value='Scan Again'></form>";
-    page += "<h2>Live Data</h2>";
-    page += liveDataHTML;
+    page += "<h1>LT600 BLE Control</h1>";
+
+    if (lt600Connected) {
+        page += "<p>Status: <b style='color:green;'>Connected</b></p>";
+        page += "<form action='/disconnect' method='POST'><button type='submit'>Disconnect</button></form>";
+    } else {
+        page += "<p>Status: <b style='color:red;'>Disconnected</b></p>";
+        page += "<form action='/scan' method='GET'><button type='submit'>Scan for LT600</button></form>";
+    }
+
     page += "</body></html>";
     server.send(200, "text/html", page);
 }
 
-// Handle connect request
-void handleConnect() {
-    if (server.hasArg("addr")) {
-        String addr = server.arg("addr");
-        if (connectToDevice(addr)) {
-            connectedAddress = addr;
-            liveDataHTML += "<b>Connected to " + addr + "</b><br>";
-        } else {
-            liveDataHTML += "<b>Failed to connect to " + addr + "</b><br>";
-        }
-    }
-    handleRoot();
+// ==== Scan Page ====
+void handleScan() {
+    String page = "<html><head><meta charset='UTF-8'></head><body>";
+    page += "<h1>LT600 Scan</h1>";
+    page += scanForLT600();
+    page += "<br><a href='/'>Back</a>";
+    page += "</body></html>";
+    server.send(200, "text/html", page);
 }
 
-void setup() {
-    Serial.begin(115200);
+// ==== Connect Handler ====
+void handleConnect() {
+    if (lt600Address != "" && !lt600Connected) {
+        connectToLT600(lt600Address);
+    }
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+}
 
-    // Wi-Fi connect
+// ==== Disconnect Handler ====
+void handleDisconnect() {
+    disconnectLT600();
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+}
+
+// ==== Setup ====
+void setup() {
+    Serial.begin(115200, SERIAL_8N1);
+
     WiFi.begin(ssid, password);
     Serial.printf("Connecting to %s", ssid);
     while (WiFi.status() != WL_CONNECTED) {
@@ -132,18 +186,26 @@ void setup() {
     }
     Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
-    // BLE init
     BLEDevice::init("");
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setActiveScan(true);
 
-    // Web server routes
     server.on("/", handleRoot);
-    server.on("/connect", handleConnect);
+    server.on("/scan", handleScan);
+    server.on("/connect", HTTP_POST, handleConnect);
+    server.on("/disconnect", HTTP_POST, handleDisconnect);
     server.begin();
-    Serial.println("HTTP server started");
 }
 
+// ==== Loop ====
 void loop() {
     server.handleClient();
+
+    // Auto-reconnect if needed
+    if (!lt600Connected && reconnectPending && lt600Address != "") {
+        Serial.println("Reconnecting to LT600...");
+        reconnectPending = false;
+        connectToLT600(lt600Address);
+    }
 }
+
