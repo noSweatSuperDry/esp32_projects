@@ -1,34 +1,28 @@
-// How it works now
-// The main HTML page loads once.
-
-// JavaScript opens a /events SSE stream.
-
-// Every time the ESP32 gets BLE data, it:
-
-// Prints it to Serial (USB-C, 115200 baud, 8N1, no flow control).
-
-// Stores it in the last 10 message buffer.
-
-// Sends it instantly to the browser via SSE — only the <div> updates, no page reload.
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <WebServer.h>
 
-// ==== Wi-Fi credentials ====
-const char* ssid = "SKYNET MESH NETWORK";
-const char* password = "Evan.Sejnin.15";
+// ==== AP credentials ====
+const char* apSSID = "LT600_HUB";
+const char* apPassword = "123456";
+
+// ==== DNS ====
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
 
 // ==== LT600 UUIDs ====
 static BLEUUID lt600ServiceUUID("0bd51666-e7cb-469b-8e4d-2742f1ba77cc");
 static BLEUUID lt600NotifyUUID("e7add780-b042-4876-aae1-11285535f821");
 static BLEUUID writeCharUUID("e7add780-b042-4876-aae1-11285535f721");
+
 // ==== Web server ====
 WebServer server(80);
 
-// ==== BLE ====
+// ==== BLE variables ====
 BLEScan* pBLEScan;
 BLEClient* pClient;
 BLERemoteCharacteristic* pNotifyChar;
@@ -47,7 +41,7 @@ class LT600ClientCallbacks : public BLEClientCallbacks {
         reconnectPending = true;
     }
 };
-LT600ClientCallbacks clientCB; // global instance
+LT600ClientCallbacks clientCB;
 
 // ==== Notify callback ====
 static void notifyCallback(
@@ -58,7 +52,7 @@ static void notifyCallback(
 ) {
     String incoming = "";
     for (size_t i = 0; i < length; i++) incoming += (char)pData[i];
-    Serial.println(incoming); // Forward BLE data to USB serial
+    Serial.println(incoming);
 }
 
 // ==== Connect to LT600 ====
@@ -131,7 +125,7 @@ String scanForLT600() {
     return resultHTML;
 }
 
-// ==== Web Page ====
+// ==== Root Page ====
 void handleRoot() {
     String page = "<html><head><meta charset='UTF-8'></head><body>";
     page += "<h1>LT600 BLE Control</h1>";
@@ -176,36 +170,41 @@ void handleDisconnect() {
 
 // ==== Setup ====
 void setup() {
-    Serial.begin(115200, SERIAL_8N1);
+    Serial.begin(115200);
 
-    WiFi.begin(ssid, password);
-    Serial.printf("Connecting to %s", ssid);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    // --- WiFi AP Mode ---
+    WiFi.softAP(apSSID, apPassword);
+    IPAddress myIP = WiFi.softAPIP();
+    Serial.printf("WiFi AP started: %s\n", apSSID);
+    Serial.printf("AP IP address: %s\n", myIP.toString().c_str());
 
+    // --- DNS server for captive portal ---
+    dnsServer.start(DNS_PORT, "*", myIP);
+
+    // --- BLE Init ---
     BLEDevice::init("");
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setActiveScan(true);
 
+    // --- WebServer Handlers ---
     server.on("/", handleRoot);
     server.on("/scan", handleScan);
     server.on("/connect", HTTP_POST, handleConnect);
     server.on("/disconnect", HTTP_POST, handleDisconnect);
+
     server.begin();
+    Serial.println("HTTP server started");
 }
 
 // ==== Loop ====
 void loop() {
+    dnsServer.processNextRequest();  // Captive portal DNS
     server.handleClient();
 
-    // Auto-reconnect if needed
+    // Auto-reconnect BLE if needed
     if (!lt600Connected && reconnectPending && lt600Address != "") {
         Serial.println("Reconnecting to LT600...");
         reconnectPending = false;
         connectToLT600(lt600Address);
     }
 }
-
