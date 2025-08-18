@@ -98,7 +98,6 @@ void disconnectLT600() {
     reconnectPending = false;
 }
 
-// ==== Scan for LT600 ====
 String scanForLT600() {
     Serial.println("Scanning for LT600...");
     String resultHTML = "<h2>Scan Results</h2><ul>";
@@ -108,10 +107,12 @@ String scanForLT600() {
 
     for (int i = 0; i < count; i++) {
         BLEAdvertisedDevice dev = results->getDevice(i);
+        String addr = dev.getAddress().toString().c_str();
+        String name = dev.haveName() ? dev.getName().c_str() : "Unknown";
+
         if (dev.haveServiceUUID() && dev.isAdvertisingService(lt600ServiceUUID)) {
-            String addr = dev.getAddress().toString().c_str();
             lt600Address = addr;
-            resultHTML += "<li>LT600 found at " + addr +
+            resultHTML += "<li>" + name + " (" + addr + ")" +
                           " <form style='display:inline;' action='/connect' method='POST'><button type='submit'>Connect</button></form></li>";
         }
     }
@@ -124,6 +125,7 @@ String scanForLT600() {
     pBLEScan->clearResults();
     return resultHTML;
 }
+
 
 // ==== Root Page ====
 void handleRoot() {
@@ -172,11 +174,13 @@ void handleDisconnect() {
 void setup() {
     Serial.begin(115200);
 
-    // --- WiFi AP Mode ---
-    WiFi.softAP(apSSID, apPassword);
-    IPAddress myIP = WiFi.softAPIP();
-    Serial.printf("WiFi AP started: %s\n", apSSID);
-    Serial.printf("AP IP address: %s\n", myIP.toString().c_str());
+ // --- WiFi AP Mode ---
+WiFi.mode(WIFI_AP);  // force AP-only mode
+WiFi.softAP(apSSID, apPassword);
+IPAddress myIP = WiFi.softAPIP();
+Serial.printf("WiFi AP started: %s\n", apSSID);
+Serial.printf("AP IP address: %s\n", myIP.toString().c_str());
+
 
     // --- DNS server for captive portal ---
     dnsServer.start(DNS_PORT, "*", myIP);
