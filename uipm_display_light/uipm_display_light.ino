@@ -14,16 +14,31 @@ CRGB led3[NUM_LEDS];
 CRGB led4[NUM_LEDS];
 CRGB led5[NUM_LEDS];
 
+// Global mapping pointer filled in setup()
+CRGB** gLedMap = nullptr;
+
 // --- Input pins ---
 #define IN_PIN_1 8
 #define IN_PIN_2 9
 #define IN_PIN_3 10
+
+// Configure these to match your hardware:
+// If your UIPM wiring pulls the input LOW when active (switch to ground), set to 1.
+// If your wiring is active-HIGH, set to 0.
+#define INPUT_ACTIVE_LOW 1
+
+// If the physical LED order is reversed (you're seeing left/right swapped), set to 1.
+#define LED_ORDER_REVERSED 0
+
+// Enable to print raw digitalRead() values in addition to logical state (helps debug wiring)
+#define DEBUG_RAW_READS 0
 
 // --- Variables to store state ---
 int lastState[3] = { -1, -1, -1 };
 
 // --- Forward declarations ---
 void setLED(CRGB *led, CRGB color);
+void setLEDAt(int idx, CRGB color);
 void setAll(CRGB color);
 void allOff();
 void applyLEDLogic(int s[]);
@@ -51,12 +66,29 @@ void setup() {
   FastLED.addLeds<WS2812, LED_PIN_4, GRB>(led4, NUM_LEDS);
   FastLED.addLeds<WS2812, LED_PIN_5, GRB>(led5, NUM_LEDS);
 
-  // Configure inputs with internal pullups.
-  // ASSUMPTION: UIPM wiring uses switches to ground (active LOW). If your hardware uses
-  // pull-down resistors or active HIGH signals, change INPUT_PULLUP and invert read logic.
+#if LED_ORDER_REVERSED
+  static CRGB* ledMapLocal[5] = { led5, led4, led3, led2, led1 };
+#else
+  static CRGB* ledMapLocal[5] = { led1, led2, led3, led4, led5 };
+#endif
+
+  // expose ledMap via global pointer so helpers can use it
+  gLedMap = (CRGB**)ledMapLocal;
+
+  // Configure inputs based on INPUT_ACTIVE_LOW setting.
+#if INPUT_ACTIVE_LOW
+  // Active = LOW, enable internal pull-ups (common UIPM wiring)
   pinMode(IN_PIN_1, INPUT_PULLUP);
   pinMode(IN_PIN_2, INPUT_PULLUP);
   pinMode(IN_PIN_3, INPUT_PULLUP);
+#else
+  // Active = HIGH. Prefer internal pull-down if available (ESP32). If your board
+  // doesn't support INPUT_PULLDOWN, change these to plain INPUT and add external
+  // pull-down resistors.
+  pinMode(IN_PIN_1, INPUT_PULLDOWN);
+  pinMode(IN_PIN_2, INPUT_PULLDOWN);
+  pinMode(IN_PIN_3, INPUT_PULLDOWN);
+#endif
 
   // Show blink sequence at startup
   startupBlink();
@@ -71,7 +103,12 @@ int readInputLogical(int pin) {
   const int samples = 5;
   int sum = 0;
   for (int i = 0; i < samples; i++) {
-    sum += (digitalRead(pin) == LOW) ? 1 : 0;
+  int raw = digitalRead(pin);
+#if DEBUG_RAW_READS
+  Serial.print("raw("); Serial.print(pin); Serial.print(")="); Serial.print(raw); Serial.print(" ");
+#endif
+  if (INPUT_ACTIVE_LOW) sum += (raw == LOW) ? 1 : 0;
+  else sum += (raw == HIGH) ? 1 : 0;
     delay(5);
   }
   return (sum > samples / 2) ? 1 : 0;
@@ -101,18 +138,20 @@ void loop() {
   }
 }
 
-// --- Helper: set LED color ---
+// --- Helper: set LED color (direct pointer) ---
 void setLED(CRGB *led, CRGB color) {
   led[0] = color;
 }
 
+// Set by logical index 0..4 using gLedMap
+void setLEDAt(int idx, CRGB color) {
+  if (gLedMap == nullptr || idx < 0 || idx > 4) return;
+  setLED(gLedMap[idx], color);
+}
+
 // Set all five LEDs to the same color
 void setAll(CRGB color) {
-  setLED(led1, color);
-  setLED(led2, color);
-  setLED(led3, color);
-  setLED(led4, color);
-  setLED(led5, color);
+  for (int i = 0; i < 5; ++i) setLEDAt(i, color);
 }
 
 // --- Helper: turn off all LEDs ---
@@ -127,41 +166,41 @@ void applyLEDLogic(int s[]) {
   // Clear first
   setAll(CRGB::Black);
 
-  if (s[0]==1 && s[1]==1 && s[2]==1) { // 1 -> all OFF
+  if (s[0]==0 && s[1]==0 && s[2]==0) { // 1 -> all OFF
     // allOff already set
   }
-  else if (s[0]==1 && s[1]==0 && s[2]==0) { // 2 -> all RED
+  else if (s[0]==0 && s[1]==1 && s[2]==1) { // 2 -> all RED
     setAll(CRGB::Red);
   }
-  else if (s[0]==0 && s[1]==1 && s[2]==0) { // 3 -> 1 Green, rest Red
-    setLED(led1, CRGB::Green);
-    setLED(led2, CRGB::Red);
-    setLED(led3, CRGB::Red);
-    setLED(led4, CRGB::Red);
-    setLED(led5, CRGB::Red);
+  else if (s[0]==1 && s[1]==0 && s[2]==1) { // 3 -> 1 Green, rest Red
+    setLEDAt(0, CRGB::Green);
+    setLEDAt(1, CRGB::Red);
+    setLEDAt(2, CRGB::Red);
+    setLEDAt(3, CRGB::Red);
+    setLEDAt(4, CRGB::Red);
   }
-  else if (s[0]==1 && s[1]==1 && s[2]==0) { // 4 -> 1 & 2 Green, rest Red
-    setLED(led1, CRGB::Green);
-    setLED(led2, CRGB::Green);
-    setLED(led3, CRGB::Red);
-    setLED(led4, CRGB::Red);
-    setLED(led5, CRGB::Red);
+  else if (s[0]==0 && s[1]==0 && s[2]==1) { // 4 -> 1 & 2 Green, rest Red
+    setLEDAt(0, CRGB::Green);
+    setLEDAt(1, CRGB::Green);
+    setLEDAt(2, CRGB::Red);
+    setLEDAt(3, CRGB::Red);
+    setLEDAt(4, CRGB::Red);
   }
-  else if (s[0]==0 && s[1]==0 && s[2]==1) { // 5 -> 1..3 Green, 4..5 Red
-    setLED(led1, CRGB::Green);
-    setLED(led2, CRGB::Green);
-    setLED(led3, CRGB::Green);
-    setLED(led4, CRGB::Red);
-    setLED(led5, CRGB::Red);
+  else if (s[0]==1 && s[1]==1 && s[2]==0) { // 5 -> 1..3 Green, 4..5 Red
+    setLEDAt(0, CRGB::Green);
+    setLEDAt(1, CRGB::Green);
+    setLEDAt(2, CRGB::Green);
+    setLEDAt(3, CRGB::Red);
+    setLEDAt(4, CRGB::Red);
   }
-  else if (s[0]==1 && s[1]==0 && s[2]==1) { // 6 -> 1..4 Green, 5 Red
-    setLED(led1, CRGB::Green);
-    setLED(led2, CRGB::Green);
-    setLED(led3, CRGB::Green);
-    setLED(led4, CRGB::Green);
-    setLED(led5, CRGB::Red);
+  else if (s[0]==0 && s[1]==1 && s[2]==0) { // 6 -> 1..4 Green, 5 Red
+    setLEDAt(0, CRGB::Green);
+    setLEDAt(1, CRGB::Green);
+    setLEDAt(2, CRGB::Green);
+    setLEDAt(3, CRGB::Green);
+    setLEDAt(4, CRGB::Red);
   }
-  else if (s[0]==0 && s[1]==1 && s[2]==1) { // 7 -> all Green
+  else if (s[0]==1 && s[1]==0 && s[2]==0) { // 7 -> all Green
     setAll(CRGB::Green);
   }
   else if (s[0]==0 && s[1]==0 && s[2]==0) { // 8 - Blink Green/Red 2 times
