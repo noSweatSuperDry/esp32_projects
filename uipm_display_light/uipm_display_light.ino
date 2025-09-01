@@ -14,7 +14,6 @@ CRGB led3[NUM_LEDS];
 CRGB led4[NUM_LEDS];
 CRGB led5[NUM_LEDS];
 
-// Global mapping pointer filled in setup()
 CRGB** gLedMap = nullptr;
 
 // --- Input pins ---
@@ -22,44 +21,28 @@ CRGB** gLedMap = nullptr;
 #define IN_PIN_2 9
 #define IN_PIN_3 10
 
-// Configure these to match your hardware:
-// If your UIPM wiring pulls the input LOW when active (switch to ground), set to 1.
-// If your wiring is active-HIGH, set to 0.
 #define INPUT_ACTIVE_LOW 1
-
-// If the physical LED order is reversed (you're seeing left/right swapped), set to 1.
 #define LED_ORDER_REVERSED 0
-
-// Enable to print raw digitalRead() values in addition to logical state (helps debug wiring)
 #define DEBUG_RAW_READS 0
 
-// --- Variables to store state ---
 int lastState[3] = { -1, -1, -1 };
 
-// --- Forward declarations ---
+// --- Blink state machine ---
+bool blinking = false;
+unsigned long blinkTimer = 0;
+int blinkStep = 0;
+
+// Forward declarations
 void setLED(CRGB *led, CRGB color);
 void setLEDAt(int idx, CRGB color);
 void setAll(CRGB color);
 void allOff();
 void applyLEDLogic(int s[]);
 
-// Startup blink using helper
-void startupBlink() {
-  for (int i = 0; i < 2; i++) {
-    setAll(CRGB::Green);
-    FastLED.show();
-    delay(250);
-
-    setAll(CRGB::Red);
-    FastLED.show();
-    delay(250);
-  }
-}
-
 void setup() {
   Serial.begin(115200);
+  Serial.println("Device Started");
 
-  // Add each LED strip/controller once
   FastLED.addLeds<WS2812, LED_PIN_1, GRB>(led1, NUM_LEDS);
   FastLED.addLeds<WS2812, LED_PIN_2, GRB>(led2, NUM_LEDS);
   FastLED.addLeds<WS2812, LED_PIN_3, GRB>(led3, NUM_LEDS);
@@ -71,45 +54,31 @@ void setup() {
 #else
   static CRGB* ledMapLocal[5] = { led1, led2, led3, led4, led5 };
 #endif
-
-  // expose ledMap via global pointer so helpers can use it
   gLedMap = (CRGB**)ledMapLocal;
 
-  // Configure inputs based on INPUT_ACTIVE_LOW setting.
 #if INPUT_ACTIVE_LOW
-  // Active = LOW, enable internal pull-ups (common UIPM wiring)
   pinMode(IN_PIN_1, INPUT_PULLUP);
   pinMode(IN_PIN_2, INPUT_PULLUP);
   pinMode(IN_PIN_3, INPUT_PULLUP);
 #else
-  // Active = HIGH. Prefer internal pull-down if available (ESP32). If your board
-  // doesn't support INPUT_PULLDOWN, change these to plain INPUT and add external
-  // pull-down resistors.
   pinMode(IN_PIN_1, INPUT_PULLDOWN);
   pinMode(IN_PIN_2, INPUT_PULLDOWN);
   pinMode(IN_PIN_3, INPUT_PULLDOWN);
 #endif
 
-  // Show blink sequence at startup
-  startupBlink();
-
-  // Start with all LEDs off
   allOff();
 }
 
-// Read input with simple debounce and return logical 1 when the input indicates "active".
-// With INPUT_PULLUP we treat LOW as active (1).
 int readInputLogical(int pin) {
-  const int samples = 5;
+  const int samples = 3;
   int sum = 0;
   for (int i = 0; i < samples; i++) {
-  int raw = digitalRead(pin);
+    int raw = digitalRead(pin);
 #if DEBUG_RAW_READS
-  Serial.print("raw("); Serial.print(pin); Serial.print(")="); Serial.print(raw); Serial.print(" ");
+    Serial.print("raw("); Serial.print(pin); Serial.print(")="); Serial.print(raw); Serial.print(" ");
 #endif
-  if (INPUT_ACTIVE_LOW) sum += (raw == LOW) ? 1 : 0;
-  else sum += (raw == HIGH) ? 1 : 0;
-    delay(5);
+    if (INPUT_ACTIVE_LOW) sum += (raw == LOW) ? 1 : 0;
+    else sum += (raw == HIGH) ? 1 : 0;
   }
   return (sum > samples / 2) ? 1 : 0;
 }
@@ -120,100 +89,101 @@ void loop() {
   s[1] = readInputLogical(IN_PIN_2);
   s[2] = readInputLogical(IN_PIN_3);
 
-  // Only update if state changed
+  // Always check blinking state machine
+  if (blinking) {
+    unsigned long now = millis();
+    if (now - blinkTimer > 250) {
+      blinkTimer = now;
+      if (blinkStep % 2 == 0) {
+        setAll(CRGB::Green);
+        Serial.println("Blink: Green");
+      } else {
+        setAll(CRGB::Red);
+        Serial.println("Blink: Red");
+      }
+      FastLED.show();
+      blinkStep++;
+      if (blinkStep >= 4) {
+        blinking = false;
+        Serial.println("Blink sequence finished.");
+      }
+    }
+    return; // skip normal logic while blinking
+  }
+
+  // Only update if input changed
   if (s[0] != lastState[0] || s[1] != lastState[1] || s[2] != lastState[2]) {
-    Serial.print("GPIO State: ");
-    Serial.print(s[0]);
-    Serial.print(",");
-    Serial.print(s[1]);
-    Serial.print(",");
+    Serial.print("GPIO State Changed: ");
+    Serial.print(s[0]); Serial.print(",");
+    Serial.print(s[1]); Serial.print(",");
     Serial.println(s[2]);
 
     applyLEDLogic(s);
 
-    // Save new state
     lastState[0] = s[0];
     lastState[1] = s[1];
     lastState[2] = s[2];
   }
 }
 
-// --- Helper: set LED color (direct pointer) ---
 void setLED(CRGB *led, CRGB color) {
   led[0] = color;
 }
 
-// Set by logical index 0..4 using gLedMap
 void setLEDAt(int idx, CRGB color) {
   if (gLedMap == nullptr || idx < 0 || idx > 4) return;
   setLED(gLedMap[idx], color);
 }
 
-// Set all five LEDs to the same color
 void setAll(CRGB color) {
   for (int i = 0; i < 5; ++i) setLEDAt(i, color);
 }
 
-// --- Helper: turn off all LEDs ---
 void allOff() {
   setAll(CRGB::Black);
   FastLED.show();
 }
 
-// --- Main LED logic ---
 void applyLEDLogic(int s[]) {
-  // UIPM states mapping (1..8). The original mapping used 1/0 values; here '1' means active.
-  // Clear first
   setAll(CRGB::Black);
 
-  if (s[0]==0 && s[1]==0 && s[2]==0) { // 1 -> all OFF
-    // allOff already set
+  if (s[0]==0 && s[1]==0 && s[2]==0) { 
+    Serial.println("Case 1: All OFF");
   }
-  else if (s[0]==0 && s[1]==1 && s[2]==1) { // 2 -> all RED
+  else if (s[0]==0 && s[1]==1 && s[2]==1) { 
+    Serial.println("Case 2: All RED");
     setAll(CRGB::Red);
   }
-  else if (s[0]==1 && s[1]==0 && s[2]==1) { // 3 -> 1 Green, rest Red
+  else if (s[0]==1 && s[1]==0 && s[2]==1) {
+    Serial.println("Case 3: First Green, rest Red");
     setLEDAt(0, CRGB::Green);
-    setLEDAt(1, CRGB::Red);
-    setLEDAt(2, CRGB::Red);
-    setLEDAt(3, CRGB::Red);
-    setLEDAt(4, CRGB::Red);
+    for (int i = 1; i < 5; i++) setLEDAt(i, CRGB::Red);
   }
-  else if (s[0]==0 && s[1]==0 && s[2]==1) { // 4 -> 1 & 2 Green, rest Red
-    setLEDAt(0, CRGB::Green);
-    setLEDAt(1, CRGB::Green);
-    setLEDAt(2, CRGB::Red);
-    setLEDAt(3, CRGB::Red);
-    setLEDAt(4, CRGB::Red);
-  }
-  else if (s[0]==1 && s[1]==1 && s[2]==0) { // 5 -> 1..3 Green, 4..5 Red
+  else if (s[0]==0 && s[1]==0 && s[2]==1) {
+    Serial.println("Case 4: First 2 Green, rest Red");
     setLEDAt(0, CRGB::Green);
     setLEDAt(1, CRGB::Green);
-    setLEDAt(2, CRGB::Green);
-    setLEDAt(3, CRGB::Red);
+    for (int i = 2; i < 5; i++) setLEDAt(i, CRGB::Red);
+  }
+  else if (s[0]==1 && s[1]==1 && s[2]==0) {
+    Serial.println("Case 5: First 3 Green, last 2 Red");
+    for (int i = 0; i < 3; i++) setLEDAt(i, CRGB::Green);
+    for (int i = 3; i < 5; i++) setLEDAt(i, CRGB::Red);
+  }
+  else if (s[0]==0 && s[1]==1 && s[2]==0) {
+    Serial.println("Case 6: First 4 Green, last Red");
+    for (int i = 0; i < 4; i++) setLEDAt(i, CRGB::Green);
     setLEDAt(4, CRGB::Red);
   }
-  else if (s[0]==0 && s[1]==1 && s[2]==0) { // 6 -> 1..4 Green, 5 Red
-    setLEDAt(0, CRGB::Green);
-    setLEDAt(1, CRGB::Green);
-    setLEDAt(2, CRGB::Green);
-    setLEDAt(3, CRGB::Green);
-    setLEDAt(4, CRGB::Red);
-  }
-  else if (s[0]==1 && s[1]==0 && s[2]==0) { // 7 -> all Green
+  else if (s[0]==1 && s[1]==0 && s[2]==0) {
+    Serial.println("Case 7: All Green");
     setAll(CRGB::Green);
   }
-  else if (s[0]==0 && s[1]==0 && s[2]==0) { // 8 - Blink Green/Red 2 times
-    for (int i = 0; i < 2; i++) {
-      setAll(CRGB::Green);
-      FastLED.show();
-      delay(250);
-
-      setAll(CRGB::Red);
-      FastLED.show();
-      delay(250);
-    }
-    // After blink, keep them Red briefly then return to mapping (we'll set below)
+  else if (s[0]==1 && s[1]==1 && s[2]==1) {
+    Serial.println("Case 8: Blink Green/Red");
+    blinking = true;
+    blinkStep = 0;
+    blinkTimer = millis();
   }
 
   FastLED.show();
