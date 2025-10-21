@@ -1,207 +1,126 @@
-🖥️ ESP32-C3 Wake-on-LAN Controller (HTTP + Static IP + Web Config + Button Trigger)
-
-A self-contained Wake-on-LAN (WoL) and Wi-Fi configuration server for the ESP32-C3.
-It hosts a simple web UI for changing Wi-Fi credentials and target device MAC, supports static IP, Basic Auth for secure access, and allows you to wake your PC via:
-
-Web interface → /wake button
-
-Physical GPIO 5 button
-
-Perfect for home-lab, automation, or remote PC control setups.
-
-✨ Features
-Feature	Description
-🌐 HTTP Web UI	Simple, mobile-friendly config panel served from ESP32
-🔐 Basic Auth	/settings & /factory protected (admin / snip33r)
-⚙️ Wi-Fi Configurable	Change SSID, password, and laptop MAC from /settings
-🖧 Static IP	Uses 192.168.100.201 with Pi-hole DNS and gateway 192.168.100.1
-🧠 NVS Storage	Settings saved to flash (persistent across reboots)
-📡 Wake-on-LAN	Sends standard WoL magic packet (UDP port 9)
-🪫 AP Fallback	If Wi-Fi fails, starts hotspot ESP32C3-Setup (pass configureme)
-🔘 Physical Button	GPIO 5, active-LOW (pull-up enabled), wakes target instantly
-🧰 Factory Reset	/factory clears settings and reboots
-🧩 Hardware Requirements
-
-ESP32-C3 Dev Module (with onboard Wi-Fi)
-
-Momentary push button
-
-Optional: 3.3 V power supply or USB
-
-Wiring
-ESP32-C3 Pin	Component	Notes
-GPIO 5	Push-button → GND	Internal pull-up used
-3V3 / GND	Power	Standard power pins
-
-No resistor needed (the code enables internal pull-up).
-
-🌐 Web Endpoints
-URL	Method	Auth	Purpose
-/	GET	none	Status page + “Send Wake” button
-/wake	POST	none	Send Wake-on-LAN magic packet
-/settings	GET	✅ Basic Auth	Edit SSID, password, target MAC
-/settings	POST	✅ Basic Auth	Save new settings, reboot
-/factory	POST	✅ Basic Auth	Factory reset (clear NVS)
-⚡️ Default Network Configuration
-#define USE_STATIC_IP true
-const IPAddress STATIC_IP (192,168,100,201);
-const IPAddress DNS_IP    (192,168,100,100);  // Pi-hole
-const IPAddress GATEWAY_IP(192,168,100,1);
-const IPAddress SUBNET_IP (255,255,255,0);
-
-
-If USE_STATIC_IP is set to false, DHCP is used instead.
-
-🚀 Usage
-1. First Boot (Setup Mode)
-
-If the ESP32 can’t join Wi-Fi (no valid credentials):
-
-It starts an access point:
-SSID: ESP32C3-Setup
-Password: configureme
-IP: 192.168.4.1
-
-Connect to that network and open:
-👉 http://192.168.4.1/settings
-
-Log in with:
-
-Username: admin
-Password: snip33r
-
-
-Enter:
-
-Home Wi-Fi SSID
-
-Password
-
-Laptop MAC address (e.g. 11:22:33:44:55:66)
-
-Click Save & Reboot
-
-2. Normal Operation
-
-Once connected, open the static IP:
-
-👉 http://192.168.100.201/
-
-You’ll see:
-
-Connection status
-
-Target MAC
-
-“Send Wake” button
-
-Link to Settings (requires auth)
-
-3. Sending Wake-on-LAN
-
-Press “Send Wake” in the browser
-
-Or physically press the GPIO 5 button
-
-If your laptop supports Wake-on-LAN, it should power on from sleep/shutdown.
-
-🧠 Laptop Configuration (Acer Aspire A514-54 example)
-
-BIOS
-
-Enable Wake on LAN (may require setting a supervisor password).
-
-Windows Settings
-
-Keep Fast Startup ON (needed for wake from shutdown on Acer models).
-
-Network Adapter → Power Management → Allow this device to wake computer.
-
-Advanced → Wake on Magic Packet = Enabled.
-
-Connection Type
-
-Prefer Ethernet (WoL over Wi-Fi is limited).
-
-Leave on AC power for consistent wake behavior.
-
-⚙️ How It Works
-
-On boot, ESP32 tries saved Wi-Fi credentials.
-
-If it fails, it launches AP setup mode.
-
-When connected, it starts a lightweight HTTP server on port 80.
-
-/wake constructs a magic packet:
-
-FF FF FF FF FF FF + [MAC repeated 16 times]
-
-
-and sends it via UDP broadcast on port 9.
-
-Your laptop’s NIC (if WoL enabled) wakes the system.
-
-🔧 Customization
-Feature	Where to Change
-Static IP / DNS	USE_STATIC_IP block
-WoL Port	WOL_PORT constant
-Auth Credentials	AUTH_USER, AUTH_PASS
-Button GPIO	BUTTON_PIN constant
-Debounce / long press	DEBOUNCE_MS, LONGPRESS_MS
-🛠️ Dependencies
-
-No external libraries required beyond ESP32 core:
-
-WiFi.h
-
-WebServer.h
-
-WiFiUdp.h
-
-Preferences.h
-
-🧪 Tested On
-Component	Version
-Board	ESP32-C3 DevKitM-1
-Framework	Arduino 2.0.14+ (ESP32 Core 3.x)
-OS	Windows 11 + Acer Aspire A514-54
-Network	Static IP, Pi-hole DNS
-🔐 Security Notes
-
-HTTP is plain-text; anyone on your LAN can access /wake.
-Protect it behind a router firewall if accessible remotely.
-
-/settings and /factory require Basic Auth.
-Credentials are not encrypted over HTTP — use only on trusted LAN.
-
-💡 Future Improvements
-
- HTTPS support (self-signed certs)
-
- WebSocket feedback or status API
-
- Support for multiple stored MACs
-
- mDNS (esp32.local)
-
- OTA updates via web UI
-
-📸 Example Flow
-
-Connect to Wi-Fi (or setup AP).
-
-Visit http://192.168.100.201/settings.
-
-Login → Update SSID, password, MAC.
-
-Press Save & Reboot.
-
-Visit http://192.168.100.201/ again → Send Wake.
-
-Or press GPIO 5 button → instant WoL.
-
-⚡️ License
-
-MIT License
-© 2025 Zahid Abdullah
+====================================================================================
+ README – ESP32-C3 / M5Stamp-C3U Deep-Sleep Wake-on-LAN Controller
+====================================================================================
+
+ Project Overview
+ ----------------
+ This firmware turns an ESP32-C3 (tested with M5Stamp-C3U) into a low-power
+ Wake-on-LAN controller that can power on a PC either through a relay pulse or a
+ WOL magic packet. It also reports the PC’s ON/OFF state via an RGB LED.
+
+ When idle, the ESP stays in deep sleep, consuming microamps.
+ It wakes up only when the built-in button is pressed (GPIO9) or optionally on a
+ timer. After performing its task, it automatically returns to deep sleep.
+
+------------------------------------------------------------------------------------
+ Hardware Summary
+------------------------------------------------------------------------------------
+ • MCU Board : ESP32-C3 or M5Stamp-C3U
+ • Wi-Fi     : Uses existing 2.4 GHz LAN (works with Pi-hole DHCP)
+ • Wake Btn  : GPIO9 (built-in) — deep-sleep wake source (EXT0, active-LOW)
+ • Optional Btn : GPIO5 (external, pulled-up) — usable while awake
+ • Relay OUT : GPIO6 → drives PC power relay (active HIGH pulse)
+ • RGB LED   : GPIO2 (onboard SK6812) → GREEN = PC ON, OFF = PC OFF
+
+------------------------------------------------------------------------------------
+ Behavior Summary
+------------------------------------------------------------------------------------
+ 1. **Deep Sleep Mode**
+    - ESP32 is mostly off.
+    - Wake sources:
+        * Built-in button (GPIO9 → GND)
+        * Optional timer (configurable in seconds)
+
+ 2. **On Wake**
+    - Connects to Wi-Fi using stored SSID/PASS.
+    - Checks if the PC is online:
+        * ICMP ping via ESPPing library
+        * If ping fails, tries TCP ports (3389, 445, 22, 80)
+    - LED briefly shows result:
+        * GREEN → PC is ON
+        * OFF   → PC is OFF or not reachable
+    - If the PC is OFF:
+        * GPIO6 pulses HIGH for 800 ms → simulates power button press
+        * Sends Wake-on-LAN magic packet to broadcast (255.255.255.255:9)
+    - Remains awake for a short period (~1 s) so you can also press the external
+      GPIO5 button to repeat the wake action if needed.
+    - Turns Wi-Fi off, clears LED, and re-enters deep sleep.
+
+ 3. **Periodic Timer Wake (optional)**
+    - If enabled (`TIMER_WAKE_SECS > 0`), the ESP wakes every N seconds,
+      checks PC status, lights the LED briefly, and sleeps again.
+
+------------------------------------------------------------------------------------
+ Pinout & Connections
+------------------------------------------------------------------------------------
+   ┌───────────────────────────────┐
+   │   M5Stamp-C3U (ESP32-C3)     │
+   │                               │
+   │   GPIO2  → SK6812 LED DI     │
+   │   GPIO5  → External Button → GND (optional) │
+   │   GPIO6  → Relay IN (active HIGH)           │
+   │   GPIO9  → Built-in Button → GND (wake pin) │
+   │   3V3/GND → Power/Relay module supply       │
+   └───────────────────────────────┘
+
+------------------------------------------------------------------------------------
+ Configuration
+------------------------------------------------------------------------------------
+ • Edit the section **USER SETTINGS** below:
+      WIFI_SSID / WIFI_PASSWORD
+      PC_MAC_STR — your PC’s MAC address (for WOL)
+      PC_IP_STR  — your PC’s static or reserved IP
+
+ • Adjust optional parameters:
+      RELAY_PULSE_MS     – length of relay pulse (ms)
+      LED_VISIBLE_MS     – how long LED stays lit before sleeping
+      TIMER_WAKE_SECS    – periodic wake interval (0 = disabled)
+
+------------------------------------------------------------------------------------
+ Library Requirements
+------------------------------------------------------------------------------------
+ • **ESPPing**           (for ping detection)
+ • **Adafruit NeoPixel** (for SK6812 LED)
+ • **WiFi / WiFiUDP**    (included with ESP32 core)
+
+------------------------------------------------------------------------------------
+ Typical Power Consumption
+------------------------------------------------------------------------------------
+ • Deep sleep: ~10–20 µA
+ • Active Wi-Fi check: ~80–100 mA for ≈2–3 s
+
+------------------------------------------------------------------------------------
+ Tips
+------------------------------------------------------------------------------------
+ • Ensure your PC and ESP are on the same LAN/subnet (Ping + WoL broadcast work).
+ • In Windows Firewall, enable “File and Printer Sharing → Echo Request (ICMPv4-In)”
+   so ping can succeed, or rely on the TCP fallback check.
+ • For reliable WoL, keep the PC BIOS and NIC configured to “Wake on Magic Packet”.
+
+------------------------------------------------------------------------------------
+ Author / Credits
+------------------------------------------------------------------------------------
+ • Firmware concept & consolidation by ChatGPT (ESP32 Projects Series)
+ • Original base built from laptop-switch.ino project
+ • Simplified & optimized for deep sleep operation
+
+------------------------------------------------------------------------------------
+ END OF README
+====================================================================================
+*/
+/*
+  ESP32-C3 / M5Stamp-C3U — Deep Sleep Wake-on-LAN + Relay + LED (NO HTTP/LOGS)
+
+  - Wakes on: built-in button GPIO9 (active LOW, EXT0), and optional timer.
+  - On wake:
+      * Wi-Fi connect
+      * If PC is OFF -> pulse GPIO6 (relay) + send WoL
+      * Update LED: green if PC ONLINE, off if OFFLINE (visible briefly)
+      * Wi-Fi off, LED off, back to deep sleep
+
+  Hardware:
+    Buttons: GPIO9 (M5Stamp built-in) for wake; GPIO5 still works *after* wake
+    Relay  : GPIO6 (active HIGH pulse)
+    LED    : SK6812 on GPIO2 (green when PC online)
+
+  Serial baud: 115200
