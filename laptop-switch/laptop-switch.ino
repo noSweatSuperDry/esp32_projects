@@ -1,18 +1,18 @@
 /*
-  ESP32-C3 / M5Stamp-C3U — Wake-on-LAN + Status + Relay + LED + In-Browser Logs (FIXED)
+  ESP32-C3 / M5Stamp-C3U — Wake-on-LAN + Status + Relay + LED + In-Browser Logs (FINAL)
 
-  Features:
-  - "/"      : Status + Wake button
-  - "/wake"  : POST -> if PC is OFF -> relay pulse (GPIO6), then WoL
-  - "/status": JSON {"online":true/false}
-  - "/diag"  : Quick diagnostics + 1-shot ping
-  - "/log"   : Live logs (HTML, auto-refresh)
-  - "/logs"  : Raw logs (text/plain), last N lines
+  Endpoints:
+    /        -> Status + Wake button
+    /status  -> {"online":true/false}
+    /wake    -> POST; if PC is OFF -> pulse GPIO6, then WoL
+    /diag    -> Quick diagnostics + one-shot check
+    /log     -> Live logs (auto-refresh)
+    /logs    -> Raw logs (tail; use ?n=150 to limit)
 
   Hardware:
-  - Buttons: GPIO5 (external to GND + PULLUP), GPIO9 (M5Stamp built-in)
-  - Relay:   GPIO6 (HIGH pulse when PC OFF)
-  - LED:     SK6812 on GPIO2 (green when PC online, off otherwise)
+    Buttons: GPIO5 (external to GND + PULLUP), GPIO9 (M5Stamp built-in)
+    Relay  : GPIO6 (HIGH pulse when PC OFF)
+    LED    : SK6812 on GPIO2 (green when PC online, off otherwise)
 
   Serial baud: 115200
 */
@@ -43,14 +43,14 @@ const char* PC_IP_STR  = "192.168.100.20";          // <- change to your PC IP
 #define BUTTON_DEBOUNCE_MS 40
 #define LED_REFRESH_MS     5000
 
-// ====== LOG BUFFER (ring) ======
-#define LOG_LINES      300      // keep last 300 lines
-#define LOG_LINE_MAX   220      // max chars per line stored
-char _logBuf[LOG_LINES][LOG_LINE_MAX];
-uint16_t _logHead = 0;          // next write index
-uint16_t _logCount = 0;         // number of valid lines in buffer
+// ====== LOG BUFFER (ring, shown at /logs) ======
+#define LOG_LINES      300
+#define LOG_LINE_MAX   220
+char     _logBuf[LOG_LINES][LOG_LINE_MAX];
+uint16_t _logHead   = 0;     // next write index
+uint16_t _logCount  = 0;     // number of valid lines
 
-// --- logging helpers (now support both const char* and String) ---
+// --- logging helpers (accept both const char* and String) ---
 void _appendLogLine(const char* s) {
   size_t n = strnlen(s, LOG_LINE_MAX - 1);
   memcpy(_logBuf[_logHead], s, n);
@@ -60,11 +60,11 @@ void _appendLogLine(const char* s) {
 }
 void _appendLogLine(const String& s) { _appendLogLine(s.c_str()); }
 
-void _logln(const char* s) { Serial.println(s); _appendLogLine(s); }
+void _logln(const char* s)   { Serial.println(s); _appendLogLine(s); }
 void _logln(const String& s) { Serial.println(s); _appendLogLine(s); }
 
-void _log(const char* s) { Serial.print(s); _appendLogLine(s); }
-void _log(const String& s) { Serial.print(s); _appendLogLine(s); }
+void _log(const char* s)     { Serial.print(s);  _appendLogLine(s); }
+void _log(const String& s)   { Serial.print(s);  _appendLogLine(s); }
 
 void _logf(const char* fmt, ...) {
   char tmp[LOG_LINE_MAX];
@@ -81,15 +81,15 @@ void _logf(const char* fmt, ...) {
 
 // ====== Globals ======
 WebServer server(80);
-WiFiUDP udp;
+WiFiUDP   udp;
 IPAddress pcIP;
 
 Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-unsigned long lastCheckLED = 0;
+unsigned long lastCheckLED  = 0;
 unsigned long lastBtnChange = 0;
-bool lastBtnLevel  = true;   // pull-up inputs -> HIGH = idle
-bool lastBtn2Level = true;
+bool          lastBtnLevel  = true;  // pull-up inputs: HIGH = idle
+bool          lastBtn2Level = true;
 
 // ---------- Utils ----------
 bool parseMac(const char* macStr, uint8_t mac[6]) {
@@ -115,10 +115,10 @@ void sendWoL(const uint8_t mac[6]) {
   printMac(mac);
   LOGF(", size=%d bytes\n", (int)sizeof(packet));
 
-  // Keep UDP active; begin once on an ephemeral port
+  // Begin UDP on ephemeral port (only once)
   static bool udpBegun = false;
   if (!udpBegun) {
-    bool b = udp.begin(0);             // no .localPort() here (not available on your core)
+    bool b = udp.begin(0);
     LOGF("[UDP] begin(0) -> %s\n", b ? "OK" : "FAIL");
     udpBegun = b;
   }
@@ -131,27 +131,58 @@ void sendWoL(const uint8_t mac[6]) {
   LOGF("[WOL] endPacket -> %s\n", ok ? "OK" : "FAIL");
 }
 
-bool pcIsOnlineVerbose(unsigned attempts = 1) {
+// Try TCP connect as a fallback when ICMP is blocked
+bool pcIsOnlineTcp(uint16_t port, uint16_t timeout_ms = 400) {
+  WiFiClient client;
+  LOGF("[TCPCHK] %s:%u ... ", pcIP.toString().c_str(), port);
+  bool ok = client.connect(pcIP, port, timeout_ms);
+  if (ok) {
+    LOGLN("OK");
+    client.stop();
+    return true;
+  } else {
+    LOGLN("FAIL");
+    client.stop();
+    return false;
+  }
+}
+
+// ICMP first (ESPPing); if it fails, try a few TCP ports
+bool pcIsOnlineVerbose(unsigned attempts = 2, uint32_t perAttemptDelayMs = 700) {
   if (!pcIP) {
     LOGLN("[PING] ERROR: pcIP invalid or unset");
     return false;
   }
-  LOG("[PING] Pinging ");
-  LOG(pcIP.toString());   // now accepted by LOG(String)
-  LOGF(" x%u ...\n", attempts);
 
-  bool any = false;
+  LOGF("[PING] Pinging %s x%u\n", pcIP.toString().c_str(), attempts);
+
+  bool pingAny = false;
   for (unsigned i = 0; i < attempts; ++i) {
-    bool r = Ping.ping(pcIP, 1);   // 1 probe per attempt
-    LOGF("[PING] try %u -> %s (avg=%ld ms)\n", i+1, r ? "SUCCESS" : "FAIL", Ping.averageTime());
-    any |= r;
+    bool r = Ping.ping(pcIP, 1);          // one probe per attempt
+    long avg = Ping.averageTime();         // -1 on fail
+    LOGF("[PING] try %u -> %s (avg=%ld ms)\n", i+1, r ? "SUCCESS" : "FAIL", avg);
+    if (r) pingAny = true;
+    if (!r && perAttemptDelayMs) delay(perAttemptDelayMs);
   }
-  LOGF("[PING] result OVERALL: %s\n", any ? "ONLINE" : "OFFLINE");
-  return any;
+  LOGF("[PING] Overall: %s\n", pingAny ? "ONLINE (ICMP)" : "OFFLINE (ICMP)");
+
+  if (pingAny) return true;
+
+  // TCP fallbacks (pick the ones your PC likely has open)
+  const uint16_t ports[] = { 3389, 445, 135, 5357, 22, 80, 443 };
+  LOGF("[TCPCHK] ICMP failed; trying %u TCP ports...\n", (unsigned)(sizeof(ports)/sizeof(ports[0])));
+  for (uint16_t p : ports) {
+    if (pcIsOnlineTcp(p)) {
+      LOGLN("[TCPCHK] Online via TCP");
+      return true;
+    }
+  }
+  LOGLN("[TCPCHK] All TCP checks failed -> assume OFFLINE");
+  return false;
 }
 
 bool pcIsOnline() {
-  return pcIsOnlineVerbose(1);
+  return pcIsOnlineVerbose();  // defaults above
 }
 
 void ledShowOnline(bool online) {
@@ -276,9 +307,9 @@ void handleDiag() {
   s += pcIP.toString();
   s += F("</code></li><li>PC MAC: <code>");
   s += PC_MAC_STR;
-  s += F("</code></li></ul><h3>One-shot Ping</h3><pre>");
+  s += F("</code></li></ul><h3>One-shot Check</h3><pre>");
 
-  bool pong = pcIsOnlineVerbose(1);
+  bool pong = pcIsOnlineVerbose(2, 700);
   s += (pong ? "ONLINE\n" : "OFFLINE\n");
 
   s += F("</pre><p><a href='/'>Back</a></p></body></html>");
@@ -309,16 +340,13 @@ void handleLogPage() {
 }
 
 void handleLogsRaw() {
-  // Optional: ?n=150 to limit
   int n = server.hasArg("n") ? server.arg("n").toInt() : LOG_LINES;
-  if (n < 1) n = 1;
-  if (n > LOG_LINES) n = LOG_LINES;
+  if (n < 1) n = 1; if (n > LOG_LINES) n = LOG_LINES;
 
   String s;
-  // Compute starting index: oldest among the last n lines
-  uint16_t use = (_logCount < (uint16_t)n) ? _logCount : (uint16_t)n;
+  uint16_t use   = (_logCount < (uint16_t)n) ? _logCount : (uint16_t)n;
   uint16_t start = (_logHead + LOG_LINES - _logCount) % LOG_LINES;
-  uint16_t skip = (_logCount > (uint16_t)n) ? (_logCount - (uint16_t)n) : 0;
+  uint16_t skip  = (_logCount > (uint16_t)n) ? (_logCount - (uint16_t)n) : 0;
   start = (start + skip) % LOG_LINES;
 
   for (uint16_t i = 0; i < use; ++i) {
@@ -333,8 +361,8 @@ void handleLogsRaw() {
 void pollButtons() {
   bool b1 = digitalRead(BUTTON_PIN);    // HIGH idle
   bool b2 = digitalRead(BUTTON2_PIN);   // HIGH idle
-  bool pressedNow = (b1 == LOW) || (b2 == LOW);
-  bool pressedBefore = (lastBtnLevel == LOW) || (lastBtn2Level == LOW);
+  bool pressedNow     = (b1 == LOW) || (b2 == LOW);
+  bool pressedBefore  = (lastBtnLevel == LOW) || (lastBtn2Level == LOW);
 
   unsigned long now = millis();
   if (now - lastBtnChange > BUTTON_DEBOUNCE_MS) {
@@ -428,7 +456,7 @@ void loop() {
   server.handleClient();
   pollButtons();
 
-  // periodic LED refresh from ping
+  // periodic LED refresh from check
   if (millis() - lastCheckLED > LED_REFRESH_MS) {
     lastCheckLED = millis();
     LOGLN("[TASK] Periodic status refresh -> LED update");
