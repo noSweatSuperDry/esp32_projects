@@ -4,16 +4,18 @@
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <time.h>
+#include <WebServer.h>
 
 // ================== USER CONFIG ==================
-#define WIFI_SSID        "xxxxxxxxxx"
-#define WIFI_PASS        "xxxxxxxxxxxxxxx"
+#define WIFI_SSID        "xxx"
+#define WIFI_PASS        "xxx"
 
-#define OPENWEATHER_API_KEY "xxxxxxxxxxxxxxxxxxx"
+#define OPENWEATHER_API_KEY "xxx"
 // Use your location:
-#define LATITUDE   xxxxxxxx   // Helsinki example
-#define LONGITUDE  xxxxxxxx
-// Or you can switch to city name query, see buildWeatherURL()
+#define LATITUDE   xxx   // Helsinki example
+#define LONGITUDE  xxx
+// Or you can switch
+
 // Matrix setup
 #define DATA_PIN   7
 #define MATRIX_W   16
@@ -29,34 +31,76 @@ static const char* TZ_EUROPE_HELSINKI = "EET-2EEST,M3.5.0/03,M10.5.0/04";
 // =================================================
 
 Adafruit_NeoPixel strip(NUM_LEDS, DATA_PIN, NEO_GRB + NEO_KHZ800);
+WebServer server(80);
 
-// ------------ Colors ------------
+// ------------ Color helpers ------------
 inline uint32_t C(uint8_t r, uint8_t g, uint8_t b) { return strip.Color(r, g, b); }
-const uint32_t COL_HOUR = 0x0000FF00;   // green
-const uint32_t COL_MIN  = 0x00A000FF;   // purple
-const uint32_t COL_DOT  = 0x00FF0000;   // red
-const uint32_t COL_ICON = 0x0000A0FF;   // sky blue
-const uint32_t COL_TEMP = 0x00FF8000;   // orange
+static void rgbFromColor(uint32_t col, uint8_t &r, uint8_t &g, uint8_t &b) {
+  r = (col >> 16) & 0xFF; g = (col >> 8) & 0xFF; b = col & 0xFF;
+}
+static String hexColor(uint32_t col) {
+  uint8_t r,g,b; rgbFromColor(col,r,g,b);
+  char buf[8]; snprintf(buf, sizeof(buf), "#%02X%02X%02X", r,g,b);
+  return String(buf);
+}
+
+// HSV (0..360, 0..1, 0..1) to RGB 0..255
+static void hsvToRgb(float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b) {
+  while (h < 0) h += 360.f;
+  while (h >= 360) h -= 360.f;
+  float c = v * s;
+  float x = c * (1 - fabsf(fmodf(h / 60.f, 2.f) - 1));
+  float m = v - c;
+  float r1=0,g1=0,b1=0;
+  if      (h < 60)  { r1=c; g1=x; b1=0; }
+  else if (h < 120) { r1=x; g1=c; b1=0; }
+  else if (h < 180) { r1=0; g1=c; b1=x; }
+  else if (h < 240) { r1=0; g1=x; b1=c; }
+  else if (h < 300) { r1=x; g1=0; b1=c; }
+  else              { r1=c; g1=0; b1=x; }
+  r = (uint8_t)roundf((r1 + m) * 255);
+  g = (uint8_t)roundf((g1 + m) * 255);
+  b = (uint8_t)roundf((b1 + m) * 255);
+}
+
+// 4 hourly-cycling colors (distinct hues)
+uint32_t colHour = 0, colMin = 0, colIcon = 0, colTemp = 0;
+int lastColorHour = -1;
+void setHourlyColors(int hour) {
+  if (hour == lastColorHour) return;
+  lastColorHour = hour;
+  float base = fmodf(hour * 37.0f, 360.0f);
+  float hues[4] = { base, fmodf(base + 90.f, 360.f), fmodf(base + 180.f, 360.f), fmodf(base + 270.f, 360.f) };
+  uint8_t r,g,b;
+  hsvToRgb(hues[0], 1.0f, 1.0f, r, g, b); colHour = C(r,g,b);
+  hsvToRgb(hues[1], 1.0f, 1.0f, r, g, b); colMin  = C(r,g,b);
+  hsvToRgb(hues[2], 1.0f, 1.0f, r, g, b); colIcon = C(r,g,b);
+  hsvToRgb(hues[3], 1.0f, 1.0f, r, g, b); colTemp = C(r,g,b);
+}
 
 // ------------ State ------------
 float  g_tempC = NAN;
 String g_weatherMain = "";
 unsigned long g_lastWeatherFetch = 0;
 
-// ------------ Serpentine mapping ------------
-// Adds 180° rotation by inverting both x and y.
+// Blinking bar state (row y=9)
+bool     g_barVisible = false;
+uint32_t g_barColor   = 0;
+int      g_lastSecond = -1;
+
+// ------------ Serpentine mapping + 180° rotation ------------
+// 180° rotation (invert x & y) + mirroring fix (odd: L->R, even: R->L).
 uint16_t xy2i(uint8_t x, uint8_t y) {
   x = MATRIX_W - 1 - x;
   y = MATRIX_H - 1 - y;
   bool oddRow = y & 1;
-  if (oddRow) return y * MATRIX_W + x;
-  else return y * MATRIX_W + (MATRIX_W - 1 - x);
+  if (oddRow) return y * MATRIX_W + x;                       // left -> right
+  else        return y * MATRIX_W + (MATRIX_W - 1 - x);      // right -> left
 }
 
 inline void setXY(uint8_t x, uint8_t y, uint32_t color) {
   if (x < MATRIX_W && y < MATRIX_H) strip.setPixelColor(xy2i(x, y), color);
 }
-
 inline void clearAll() { strip.clear(); }
 
 // ------------ Fonts ------------
@@ -107,21 +151,27 @@ void drawWeatherIcon6x6(uint8_t x, uint8_t y, const uint8_t* bmp, uint32_t color
 }
 
 // ------------ Draw sections ------------
-void drawTimeTop(uint8_t hours, uint8_t minutes, bool showBlinkDot) {
-  const uint8_t y0 = 2;
+void drawTimeTop(uint8_t hours, uint8_t minutes) {
+  const uint8_t y0 = 2; // y=0..8 top band height
   uint8_t h1 = (hours / 10) % 10;
   uint8_t h2 = hours % 10;
   uint8_t m1 = (minutes / 10) % 10;
   uint8_t m2 = minutes % 10;
 
-  drawDigit3x5(0,  y0, h1, COL_HOUR);
-  drawDigit3x5(4,  y0, h2, COL_HOUR);
-  drawDigit3x5(9,  y0, m1, COL_MIN);
-  drawDigit3x5(13, y0, m2, COL_MIN);
-
-  if (showBlinkDot) setXY(8, y0 + 1, COL_DOT);
+  // Layout: H1(0..2) gap(3) H2(4..6) gap(7) gap(8) M1(9..11) gap(12) M2(13..15)
+  drawDigit3x5(0,  y0, h1, colHour);
+  drawDigit3x5(4,  y0, h2, colHour);
+  drawDigit3x5(9,  y0, m1, colMin);
+  drawDigit3x5(13, y0, m2, colMin);
 }
 
+// Blinking bar in gap row y=9, full width (x=0..15)
+void drawBlinkBar() {
+  if (!g_barVisible) return;
+  for (uint8_t x = 0; x < 16; x++) setXY(x, 9, g_barColor);
+}
+
+// Bottom 6×16: icon (6×6) left, temperature right
 void drawBottomBand() {
   const uint8_t xIcon = 0, yIcon = 10;
   const uint8_t* icon = ICON_CLOUDS_6x6;
@@ -132,7 +182,7 @@ void drawBottomBand() {
   else if (g_weatherMain == "Thunderstorm") icon = ICON_RAIN_6x6;
   else if (g_weatherMain == "Snow")         icon = ICON_SNOW_6x6;
 
-  drawWeatherIcon6x6(xIcon, yIcon, icon, COL_ICON);
+  drawWeatherIcon6x6(xIcon, yIcon, icon, colIcon);
 
   if (!isnan(g_tempC)) {
     int t = (int)round(g_tempC);
@@ -143,14 +193,14 @@ void drawBottomBand() {
 
     uint8_t baseY = 10;
     if (d1 >= 0) {
-      drawDigit3x5(7,  baseY, d1, COL_TEMP);
-      drawDigit3x5(10, baseY, d2, COL_TEMP);
-      if (neg) { setXY(7, baseY - 1, COL_TEMP); setXY(8, baseY - 1, COL_TEMP); setXY(9, baseY - 1, COL_TEMP); }
-      setXY(14, baseY, COL_TEMP);
+      drawDigit3x5(7,  baseY, d1, colTemp);
+      drawDigit3x5(10, baseY, d2, colTemp);
+      if (neg) { setXY(7, baseY - 1, colTemp); setXY(8, baseY - 1, colTemp); setXY(9, baseY - 1, colTemp); }
+      setXY(14, baseY, colTemp); // ° dot
     } else {
-      drawDigit3x5(9, baseY, d2, COL_TEMP);
-      if (neg) { setXY(8, baseY - 1, COL_TEMP); setXY(9, baseY - 1, COL_TEMP); setXY(10, baseY - 1, COL_TEMP); }
-      setXY(13, baseY, COL_TEMP);
+      drawDigit3x5(9, baseY, d2, colTemp);
+      if (neg) { setXY(8, baseY - 1, colTemp); setXY(9, baseY - 1, colTemp); setXY(10, baseY - 1, colTemp); }
+      setXY(13, baseY, colTemp);
     }
   }
 }
@@ -205,31 +255,148 @@ bool fetchWeather() {
   return true;
 }
 
+// ------------ HTTP /status handler ------------
+void handleStatus() {
+  DynamicJsonDocument doc(1024);
+  struct tm tinfo;
+  time_t now = time(nullptr);
+  bool haveTime = getLocalTimeSafe(&tinfo);
+
+  char iso[25] = {0};
+  if (haveTime) {
+    snprintf(iso, sizeof(iso), "%04d-%02d-%02d %02d:%02d:%02d",
+      tinfo.tm_year + 1900, tinfo.tm_mon + 1, tinfo.tm_mday,
+      tinfo.tm_hour, tinfo.tm_min, tinfo.tm_sec);
+  }
+
+  JsonObject timeObj = doc.createNestedObject("time");
+  timeObj["HH"]  = haveTime ? tinfo.tm_hour : -1;
+  timeObj["MM"]  = haveTime ? tinfo.tm_min  : -1;
+  timeObj["SS"]  = haveTime ? tinfo.tm_sec  : -1;
+  timeObj["iso"] = iso;
+
+  // ternary nullptr/float -> use if/else to satisfy C++
+  if (isnan(g_tempC)) doc["temperature_c"] = nullptr;
+  else                doc["temperature_c"] = g_tempC;
+
+  doc["weather_main"] = g_weatherMain;
+
+  JsonObject colors = doc.createNestedObject("colors");
+  colors["hour"]        = hexColor(colHour);
+  colors["minute"]      = hexColor(colMin);
+  colors["icon"]        = hexColor(colIcon);
+  colors["temperature"] = hexColor(colTemp);
+  colors["bar"]         = hexColor(g_barColor);
+
+  doc["bar_visible"] = g_barVisible;
+  doc["ip"]          = WiFi.localIP().toString();
+  doc["tz"]          = TZ_EUROPE_HELSINKI;
+  doc["epoch"]       = (uint32_t)now;
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
 // ------------ Setup & loop ------------
 void setup() {
+  Serial.begin(115200);
   strip.begin();
   strip.setBrightness(BRIGHTNESS);
   strip.show();
+
+  // Seed randomness for bar colors
+  randomSeed((uint32_t)(micros() ^ (uint32_t)ESP.getEfuseMac()));
+
   ensureWiFi();
   initTime();
   fetchWeather();
+
+  // HTTP routes
+  server.on("/status", HTTP_GET, handleStatus);
+  server.on("/", HTTP_GET, [](){ server.send(200, "text/plain", "OK. Try /status"); });
+  server.begin();
+
+  Serial.print("Ready. IP: ");
+  Serial.println(WiFi.localIP());
 }
 
 void drawAll() {
   clearAll();
+
   struct tm tinfo;
-  bool blink = false;
   if (getLocalTimeSafe(&tinfo)) {
-    blink = ((tinfo.tm_sec % 2) == 0);
-    drawTimeTop(tinfo.tm_hour, tinfo.tm_min, blink);
+    // Hourly color cycling (distinct per item, changes at top of hour)
+    setHourlyColors(tinfo.tm_hour);
+
+    // Blinking bar logic: toggle every second; ON => new random color
+    if (tinfo.tm_sec != g_lastSecond) {
+      g_lastSecond = tinfo.tm_sec;
+      bool nextVisible = (tinfo.tm_sec % 2 == 0);
+      if (nextVisible && !g_barVisible) {
+        uint8_t r = random(0, 256);
+        uint8_t g = random(0, 256);
+        uint8_t b = random(0, 256);
+        g_barColor = C(r, g, b);
+      }
+      g_barVisible = nextVisible;
+    }
+
+    // Draw top time (HH mm), gap bar, and bottom band
+    // Top band
+    const uint8_t y0 = 2;
+    uint8_t h1 = (tinfo.tm_hour / 10) % 10;
+    uint8_t h2 = tinfo.tm_hour % 10;
+    uint8_t m1 = (tinfo.tm_min / 10) % 10;
+    uint8_t m2 = tinfo.tm_min % 10;
+    drawDigit3x5(0,  y0, h1, colHour);
+    drawDigit3x5(4,  y0, h2, colHour);
+    drawDigit3x5(9,  y0, m1, colMin);
+    drawDigit3x5(13, y0, m2, colMin);
+
+    // Gap bar
+    if (g_barVisible) {
+      for (uint8_t x = 0; x < 16; x++) setXY(x, 9, g_barColor);
+    }
   }
-  drawBottomBand();
+
+  // Bottom band (icon + temperature)
+  const uint8_t xIcon = 0, yIcon = 10;
+  const uint8_t* icon = ICON_CLOUDS_6x6;
+  if      (g_weatherMain == "Clear")        icon = ICON_CLEAR_6x6;
+  else if (g_weatherMain == "Clouds")       icon = ICON_CLOUDS_6x6;
+  else if (g_weatherMain == "Rain")         icon = ICON_RAIN_6x6;
+  else if (g_weatherMain == "Drizzle")      icon = ICON_RAIN_6x6;
+  else if (g_weatherMain == "Thunderstorm") icon = ICON_RAIN_6x6;
+  else if (g_weatherMain == "Snow")         icon = ICON_SNOW_6x6;
+  drawWeatherIcon6x6(xIcon, yIcon, icon, colIcon);
+
+  if (!isnan(g_tempC)) {
+    int t = (int)round(g_tempC);
+    bool neg = t < 0;
+    int a = abs(t);
+    int d1 = (a >= 10) ? (a / 10) % 10 : -1;
+    int d2 = a % 10;
+    uint8_t baseY = 10;
+    if (d1 >= 0) {
+      drawDigit3x5(7,  baseY, d1, colTemp);
+      drawDigit3x5(10, baseY, d2, colTemp);
+      if (neg) { setXY(7, baseY - 1, colTemp); setXY(8, baseY - 1, colTemp); setXY(9, baseY - 1, colTemp); }
+      setXY(14, baseY, colTemp);
+    } else {
+      drawDigit3x5(9, baseY, d2, colTemp);
+      if (neg) { setXY(8, baseY - 1, colTemp); setXY(9, baseY - 1, colTemp); setXY(10, baseY - 1, colTemp); }
+      setXY(13, baseY, colTemp);
+    }
+  }
+
   strip.show();
 }
 
 void loop() {
+  server.handleClient();
   unsigned long nowSec = millis() / 1000;
   if (nowSec - g_lastWeatherFetch >= WEATHER_REFRESH_SEC) fetchWeather();
   drawAll();
-  delay(200);
+  delay(100);
 }
