@@ -2,8 +2,8 @@
 # Time & Weather 16×16 LED Matrix (ESP32-C3)
 
 A **Wi-Fi connected clock and weather display** for a **16×16 WS2812B LED matrix**, powered by an **ESP32-C3 (M5Stamp C3U)**.  
-It shows current time, animated seconds fill, and temperature + weather icon — all in clean color-coded rows.  
-It also includes a **web interface** for live configuration and a **JSON API** for status and debug control.
+It shows current time, animated seconds fill, and weather icon + temperature — all in clean color-coded rows.  
+It also includes a **web interface** for configuration and a **JSON API** for status and debug control.
 
 ---
 
@@ -17,15 +17,15 @@ y=5 ───────────── blank ──────────
 y=6 ┌─────────────────────────────┐   4 rows → Seconds color fill
      │ 0–59 random-color pixels   │
 y=9 └─────────────────────────────┘
-y=10┌─────────────────────────────┐   Bottom (5 px) → Temp (left) + Icon (right)
-     │ +08 °C         ☁           │
+y=10┌─────────────────────────────┐   Bottom (5 px) → Icon (left) + Temp (right)
+     │ ☁          +08 °C          │
 y=14└─────────────────────────────┘
 x=0 ………………………………………… x=15 (16 columns)
 ```
 
 ✅ **Time (y=0–4)**: “HH MM”, no colon  
 ✅ **Seconds (y=6–9)**: fills with random colors each second, clears after 60  
-✅ **Weather (y=10–14)**: temperature °C on left, icon on right  
+✅ **Weather (y=10–14)**: icon left, temperature °C right  
 ✅ **All rows used** — no visual gaps
 
 ---
@@ -34,19 +34,20 @@ x=0 ………………………………………… x=15 (16 columns)
 
 - **Accurate Time**
   - NTP-synced or manually set via web UI  
-  - Local timezone support (Europe/Helsinki default)
+  - Local timezone (Europe/Helsinki default)
 - **Weather**
   - Uses [OpenWeatherMap](https://openweathermap.org/api)
-  - Updates automatically every hour
+  - Updates every hour
 - **Web Configuration UI**
-  - Change between **NTP** and **Manual time**
-  - Set OpenWeather API key
-  - Update latitude/longitude
-  - Trigger debug mode
-- **JSON API** for programmatic access
+  - Switch between **NTP** and **Manual time**
+  - Update OpenWeather API key, latitude, longitude
+  - Start debug demo
+- **Color System**
+  - Hour, minute, icon, and temperature colors auto-change every hour  
+  - New random palette at boot
 - **Debug mode (6s demo)**
-  - Shows “88 88”, cycles all icons and shows “+88°C”
-  - Keeps filling seconds field in random colors
+  - Displays `88 88` time, cycles all icons, shows `+88°C`
+  - Resets automatically after 6 seconds
 
 ---
 
@@ -56,25 +57,25 @@ x=0 ………………………………………… x=15 (16 columns)
 |------------|-------------|
 | **Controller** | M5Stamp ESP32-C3U |
 | **LED Matrix** | 16×16 WS2812B (NeoPixel) |
-| **Power** | 5 V ≥ 2 A |
-| **Data Pin** | GPIO 7 |
+| **Power** | 5 V ≥ 2 A |
+| **Data Pin** | GPIO 7 |
 
 ### Wiring
 
 | ESP32-C3U | LED Matrix |
 |------------|-------------|
-| GPIO 7 | DIN |
-| 5 V | 5 V |
+| GPIO 7 | DIN |
+| 5 V | 5 V |
 | GND | GND |
 
-> ⚠️ Make sure **ESP32 and matrix share GND**.  
+> ⚠️ Ensure common GND between ESP32 and LED matrix.  
 > Start with **brightness = 32** (max = 255).
 
 ---
 
 ## 💾 Software Requirements
 
-Install the following libraries (Arduino IDE → Library Manager):
+Install via Arduino IDE → Library Manager:
 
 - `Adafruit NeoPixel`
 - `ArduinoJson`
@@ -87,7 +88,7 @@ Install the following libraries (Arduino IDE → Library Manager):
 
 ## ⚙️ Configuration
 
-Edit these constants in the sketch before uploading:
+In the sketch, edit these before upload:
 
 ```cpp
 #define WIFI_SSID        "YOUR_WIFI_SSID"
@@ -100,7 +101,7 @@ float  CFG_LATITUDE  = 60.1699;
 float  CFG_LONGITUDE = 24.9384;
 ```
 
-Optional: set static IP (before `WiFi.begin()`):
+Optional static IP:
 
 ```cpp
 IPAddress local(192,168,100,101), gateway(192,168,100,1), subnet(255,255,255,0), dns(1,1,1,1);
@@ -111,14 +112,13 @@ WiFi.config(local, gateway, subnet, dns);
 
 ## 🌐 Web Interface
 
-Once connected to Wi-Fi, open `http://<device-ip>/config`
+Open `http://<device-ip>/config`
 
 You can:
-- Switch between **NTP sync** or **Manual time**
-- Set **OpenWeather API key**
-- Update **latitude/longitude**
-- Trigger **6-second debug demo**
-- View live **JSON status** at `/status`
+- Toggle between NTP and manual time
+- Edit API key / latitude / longitude
+- Start debug demo
+- View JSON status
 
 ### Example `/status` Output
 
@@ -133,6 +133,12 @@ You can:
     "lat": 60.1699,
     "lon": 24.9384
   },
+  "colors": {
+    "hour": "#A1FF00",
+    "minute": "#00FFD8",
+    "icon": "#0047FF",
+    "temperature": "#FF006E"
+  },
   "ip": "192.168.100.101",
   "tz": "EET-2EEST,M3.5.0/03,M10.5.0/04",
   "epoch": 1766879685
@@ -146,26 +152,25 @@ You can:
 | Endpoint | Method | Description |
 |-----------|--------|-------------|
 | `/api/set_time` | POST | `mode=ntp` or `mode=manual&iso=YYYY-MM-DDTHH:MM:SS` |
-| `/api/set_weather` | POST | `apikey=YOUR_KEY` |
-| `/api/set_location` | POST | `lat=60.17&lon=24.93` |
-| `/api/debug` | POST | Triggers 6s debug demo |
-| `/status` | GET | JSON system state |
+| `/api/set_weather` | POST | Update OpenWeather API key |
+| `/api/set_location` | POST | Update latitude & longitude |
+| `/api/debug` | POST | Start 6s debug demo |
+| `/status` | GET | Return JSON system state |
 
 ---
 
 ## 🩺 Debug Demo
 
-Press **“Start 6s Debug Demo”** in the web UI or:
-
+Start via web or:
 ```bash
 curl -X POST http://<device-ip>/api/debug
 ```
 
-Output:
-- Time area shows `88 88`
-- Middle fills with random colors
-- Bottom cycles weather icons and shows `+88°C`
-- Resets after 6 seconds
+Displays:
+- `88 88` as time
+- Color fill animation in seconds area
+- Cycles icons and shows `+88°C`
+- Ends automatically after 6 seconds
 
 ---
 
@@ -173,36 +178,36 @@ Output:
 
 | Section | Rows | Function |
 |----------|------|----------|
-| Time | 0–4 | Shows `HH MM` (no colon) |
-| Blank | 5 | Separator |
-| Seconds field | 6–9 | 60-pixel random color fill, resets each minute |
-| Weather | 10–14 | Temp (left) + icon (right) |
-| Debug mode | — | Overrides display for 6 s demo |
+| Time | 0–4 | Displays HH MM (no colon) |
+| Blank | 5 | Spacer |
+| Seconds Field | 6–9 | 60-pixel random fill, resets every minute |
+| Weather | 10–14 | Icon left, temperature right |
+| Debug | — | Overrides all for 6 s demo |
 
 ---
 
 ## ⚡ Troubleshooting
 
-| Problem | Possible Cause | Fix |
-|----------|----------------|-----|
-| No LEDs lit | Wrong pin or no common GND | Check `DATA_PIN` and wiring |
-| Display mirrored/upside down | Matrix wiring order | Adjust mapping in `xy2i()` |
-| Weather not updating | Invalid OpenWeather key | Verify in `/config` |
-| Webpage blank | Try IP again or clear cache | Refresh browser |
-| Power flicker | Overcurrent | Use stronger 5 V supply / reduce brightness |
+| Problem | Cause | Fix |
+|----------|--------|-----|
+| LEDs off | Wrong pin / no GND | Check `DATA_PIN`, GND shared |
+| Mirrored display | Serpentine direction | Adjust `xy2i()` |
+| No weather | Invalid API key | Update in `/config` |
+| Webpage blank | Cached old UI | Refresh browser |
+| Power flicker | Weak 5 V | Lower brightness or use higher current |
 
 ---
 
 ## 🔒 Security Notes
 
-- Do **not expose** `/config` or `/status` to the open internet.
-- The OpenWeather API key is stored in device flash (NVS).
+- Do **not** expose `/config` or `/status` publicly.  
+- API key is stored in device NVS.
 
 ---
 
 ## 📜 License
 
-Free for **personal and educational** use. Attribution appreciated.
+Open source under MIT-style license. Free for personal or educational use.
 
 ---
 
