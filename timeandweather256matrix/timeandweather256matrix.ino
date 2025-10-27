@@ -25,7 +25,7 @@ String   CFG_MANUAL_ISO = "2025-01-01T00:00:00";
 #define MATRIX_W   16
 #define MATRIX_H   16
 #define NUM_LEDS   (MATRIX_W * MATRIX_H)
-#define BRIGHTNESS 32
+#define BRIGHTNESS 100
 
 // Weather refresh cadence
 const unsigned long WEATHER_REFRESH_SEC = 3600;  // 1 hour
@@ -164,11 +164,11 @@ void drawBottomWeatherNormal(){
   else if (g_weatherMain=="Thunderstorm") icon = ICON_RAIN_5x5;
   else if (g_weatherMain=="Snow")         icon = ICON_SNOW_5x5;
 
-  drawIcon5x5(0,11,icon,COL_ICON);
+  drawIcon5x5(0,10,icon,COL_ICON);
 
   if(!isnan(g_tempC)){
     int t=(int)round(g_tempC); bool neg=t<0; int a=abs(t);
-    int d1=(a>=10)?(a/10)%10:-1, d2=a%10; uint8_t baseY=11;
+    int d1=(a>=10)?(a/10)%10:-1, d2=a%10; uint8_t baseY=10;
     if(d1>=0){
       drawDigit3x5(8,  baseY, d1, COL_TEMP);
       drawDigit3x5(12, baseY, d2, COL_TEMP);
